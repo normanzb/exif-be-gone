@@ -6,57 +6,41 @@
   "bin": {
     "exif-be-gone": "cli.js"
   },
+  "type": "module",
   "types": "index.d.ts",
   "scripts": {
     "build": "tsc -p . && chmod 755 cli.js",
-    "test": "npm run build && mocha -R spec spec/*.spec.js",
+    "test": "npm run build && node --test dist/spec/all.spec.js",
     "test:samples": "npm run build && ./scripts/test.sh",
-    "lint": "standardx *.ts **/*.ts",
-    "lint:fix": "standardx *.ts **/*.ts --fix"
+    "lint": "eslint \"index.ts\" \"src/**/*.ts\"",
+    "lint:fix": "eslint --fix \"index.ts\" \"src/**/*.ts\""
   },
-  "author": "Josh Hull",
+  "author": "Norman Xu",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/joshbuddy/exif-be-gone.git"
   },
   "license": "ISC",
   "devDependencies": {
-    "@types/chai": "^4.2.12",
-    "@types/mocha": "^8.0.2",
-    "@types/node": "^18.6.3",
+    "@types/node": "^22.18.6",
     "@types/stream-buffers": "^3.0.3",
-    "@typescript-eslint/eslint-plugin": "^3.9.0",
-    "@typescript-eslint/parser": "^3.9.0",
+    "@typescript-eslint/eslint-plugin": "^8.44.0",
+    "@typescript-eslint/parser": "^8.44.0",
     "buffer-to-stream": "1.0.0",
-    "chai": "4.2.0",
-    "mocha": "8.1.1",
-    "standardx": "^7.0.0",
+    "eslint": "^8.57.1",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-import": "^2.32.0",
     "stream-buffers": "^3.0.2",
-    "typescript": "^4.7.4",
-    "typescript-eslint": "0.0.1-alpha.0"
-  },
-  "eslintConfig": {
-    "ignorePatterns": [
-      "**/*.d.ts"
-    ],
-    "rules": {
-      "no-unused-vars": "off",
-      "@typescript-eslint/no-unused-vars": "error"
-    }
-  },
-  "standardx": {
-    "parser": "@typescript-eslint/parser",
-    "plugins": [
-      "@typescript-eslint/eslint-plugin"
-    ]
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.44.0"
   },
   "files": [
     "README.md",
-    "index.ts",
     "index.d.ts",
     "index.d.ts.map",
     "index.js",
     "tsconfig.json",
-    "cli.js"
+    "cli.js",
+    "dist/**/*.js"
   ]
 }

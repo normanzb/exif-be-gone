@@ -1,84 +1,67 @@
-"use strict";
-var __extends = (this && this.__extends) || (function () {
-    var extendStatics = function (d, b) {
-        extendStatics = Object.setPrototypeOf ||
-            ({ __proto__: [] } instanceof Array && function (d, b) { d.__proto__ = b; }) ||
-            function (d, b) { for (var p in b) if (Object.prototype.hasOwnProperty.call(b, p)) d[p] = b[p]; };
-        return extendStatics(d, b);
-    };
-    return function (d, b) {
-        if (typeof b !== "function" && b !== null)
-            throw new TypeError("Class extends value " + String(b) + " is not a constructor or null");
-        extendStatics(d, b);
-        function __() { this.constructor = d; }
-        d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype, new __());
-    };
-})();
-var __spreadArray = (this && this.__spreadArray) || function (to, from, pack) {
-    if (pack || arguments.length === 2) for (var i = 0, l = from.length, ar; i < l; i++) {
-        if (ar || !(i in from)) {
-            if (!ar) ar = Array.prototype.slice.call(from, 0, i);
-            ar[i] = from[i];
-        }
+import { Transform, } from "stream";
+const app1Marker = Buffer.from("ffe1", "hex");
+const exifMarker = Buffer.from("457869660000", "hex"); // Exif\0\0
+const pngMarker = Buffer.from("89504e470d0a1a0a", "hex"); // 211   P   N   G  \r  \n \032 \n
+const webp1Marker = Buffer.from("52494646", "hex"); // RIFF
+const webp2Marker = Buffer.from("57454250", "hex"); // WEBP
+const xmpMarker = Buffer.from("http://ns.adobe.com/xap", "utf-8");
+const flirMarker = Buffer.from("FLIR", "utf-8");
+const maxMarkerLength = Math.max(exifMarker.length, xmpMarker.length, flirMarker.length);
+class ExifTransformer extends Transform {
+    remainingScrubBytes;
+    remainingGoodBytes;
+    pending;
+    mode;
+    constructor(options) {
+        super(options);
+        this.remainingScrubBytes = undefined;
+        this.pending = [];
     }
-    return to.concat(ar || Array.prototype.slice.call(from));
-};
-Object.defineProperty(exports, "__esModule", { value: true });
-var stream_1 = require("stream");
-var app1Marker = Buffer.from('ffe1', 'hex');
-var exifMarker = Buffer.from('457869660000', 'hex'); // Exif\0\0
-var pngMarker = Buffer.from('89504e470d0a1a0a', 'hex'); // 211   P   N   G  \r  \n \032 \n
-var webp1Marker = Buffer.from('52494646', 'hex'); // RIFF
-var webp2Marker = Buffer.from('57454250', 'hex'); // WEBP
-var xmpMarker = Buffer.from('http://ns.adobe.com/xap', 'utf-8');
-var flirMarker = Buffer.from('FLIR', 'utf-8');
-var maxMarkerLength = Math.max(exifMarker.length, xmpMarker.length, flirMarker.length);
-var ExifTransformer = /** @class */ (function (_super) {
-    __extends(ExifTransformer, _super);
-    function ExifTransformer(options) {
-        var _this = _super.call(this, options) || this;
-        _this.remainingScrubBytes = undefined;
-        _this.pending = [];
-        return _this;
-    }
-    ExifTransformer.prototype._transform = function (chunk, _, callback) {
+    _transform(chunk, _, callback) {
         if (this.mode === undefined) {
             if (pngMarker.equals(Uint8Array.prototype.slice.call(chunk, 0, 8))) {
-                this.mode = 'png';
+                this.mode = "png";
                 this.push(Uint8Array.prototype.slice.call(chunk, 0, 8));
                 chunk = Buffer.from(Uint8Array.prototype.slice.call(chunk, 8));
             }
-            else if (webp1Marker.equals(Uint8Array.prototype.slice.call(chunk, 0, 4)) && webp2Marker.equals(Uint8Array.prototype.slice.call(chunk, 8, 12))) {
-                this.mode = 'webp';
+            else if (webp1Marker.equals(Uint8Array.prototype.slice.call(chunk, 0, 4)) &&
+                webp2Marker.equals(Uint8Array.prototype.slice.call(chunk, 8, 12))) {
+                this.mode = "webp";
                 this.push(Uint8Array.prototype.slice.call(chunk, 0, 12));
                 chunk = Buffer.from(Uint8Array.prototype.slice.call(chunk, 12));
             }
             else {
-                this.mode = 'other';
+                this.mode = "other";
             }
         }
         this._scrub(false, chunk);
         callback();
-    };
-    ExifTransformer.prototype._final = function (callback) {
+    }
+    _final(callback) {
         while (this.pending.length !== 0) {
             this._scrub(true);
         }
         callback();
-    };
-    ExifTransformer.prototype._scrub = function (atEnd, chunk) {
+    }
+    _scrub(atEnd, chunk) {
         switch (this.mode) {
-            case 'other': return this._scrubOther(atEnd, chunk);
-            case 'png': return this._scrubPNG(atEnd, chunk);
-            case 'webp': return this._scrubWEBP(atEnd, chunk);
-            default: throw new Error('unknown mode');
+            case "other":
+                return this._scrubOther(atEnd, chunk);
+            case "png":
+                return this._scrubPNG(atEnd, chunk);
+            case "webp":
+                return this._scrubWEBP(atEnd, chunk);
+            default:
+                throw new Error("unknown mode");
         }
-    };
-    ExifTransformer.prototype._scrubOther = function (atEnd, chunk) {
-        var pendingChunk = chunk ? Buffer.concat(__spreadArray(__spreadArray([], this.pending, true), [chunk], false)) : Buffer.concat(this.pending);
+    }
+    _scrubOther(atEnd, chunk) {
+        let pendingChunk = chunk
+            ? Buffer.concat([...this.pending, chunk])
+            : Buffer.concat(this.pending);
         // currently haven't detected an app1 marker
         if (this.remainingScrubBytes === undefined) {
-            var app1Start = pendingChunk.indexOf(app1Marker);
+            const app1Start = pendingChunk.indexOf(app1Marker);
             // no app1 in the current pendingChunk
             if (app1Start === -1) {
                 // if last byte is ff, wait for more
@@ -103,10 +86,13 @@ var ExifTransformer = /** @class */ (function (_super) {
                     // we have enough, so lets read the length
                 }
                 else {
-                    var candidateMarker = Uint8Array.prototype.slice.call(pendingChunk, app1Start + 4, app1Start + maxMarkerLength + 4);
-                    if (exifMarker.compare(candidateMarker, 0, exifMarker.length) === 0 || xmpMarker.compare(candidateMarker, 0, xmpMarker.length) === 0 || flirMarker.compare(candidateMarker, 0, flirMarker.length) === 0) {
+                    const candidateMarker = Uint8Array.prototype.slice.call(pendingChunk, app1Start + 4, app1Start + maxMarkerLength + 4);
+                    if (exifMarker.compare(candidateMarker, 0, exifMarker.length) === 0 ||
+                        xmpMarker.compare(candidateMarker, 0, xmpMarker.length) === 0 ||
+                        flirMarker.compare(candidateMarker, 0, flirMarker.length) === 0) {
                         // we add 2 to the remainingScrubBytes to account for the app1 marker
-                        this.remainingScrubBytes = pendingChunk.readUInt16BE(app1Start + 2) + 2;
+                        this.remainingScrubBytes =
+                            pendingChunk.readUInt16BE(app1Start + 2) + 2;
                         this.push(Uint8Array.prototype.slice.call(pendingChunk, 0, app1Start));
                         pendingChunk = Buffer.from(Uint8Array.prototype.slice.call(pendingChunk, app1Start));
                     }
@@ -114,10 +100,11 @@ var ExifTransformer = /** @class */ (function (_super) {
             }
         }
         // we have successfully read an app1/exif marker, so we can remove data
-        if (this.remainingScrubBytes !== undefined && this.remainingScrubBytes !== 0) {
+        if (this.remainingScrubBytes !== undefined &&
+            this.remainingScrubBytes !== 0) {
             // there is more data than we want to remove, so we only remove up to remainingScrubBytes
             if (pendingChunk.length >= this.remainingScrubBytes) {
-                var remainingBuffer = Buffer.from(Uint8Array.prototype.slice.call(pendingChunk, this.remainingScrubBytes));
+                const remainingBuffer = Buffer.from(Uint8Array.prototype.slice.call(pendingChunk, this.remainingScrubBytes));
                 this.pending = remainingBuffer.length !== 0 ? [remainingBuffer] : [];
                 this.remainingScrubBytes = undefined;
                 // this chunk is too large, remove everything
@@ -133,14 +120,16 @@ var ExifTransformer = /** @class */ (function (_super) {
             this.remainingScrubBytes = undefined;
             this.pending.length = 0;
         }
-    };
-    ExifTransformer.prototype._scrubPNG = function (atEnd, chunk) {
-        var pendingChunk = chunk ? Buffer.concat(__spreadArray(__spreadArray([], this.pending, true), [chunk], false)) : Buffer.concat(this.pending);
+    }
+    _scrubPNG(atEnd, chunk) {
+        let pendingChunk = chunk
+            ? Buffer.concat([...this.pending, chunk])
+            : Buffer.concat(this.pending);
         while (pendingChunk.length !== 0) {
             pendingChunk = this._processPNGGood(pendingChunk);
             if (this.remainingScrubBytes !== undefined) {
                 if (pendingChunk.length >= this.remainingScrubBytes) {
-                    var remainingBuffer = Buffer.from(Uint8Array.prototype.slice.call(pendingChunk, this.remainingScrubBytes));
+                    const remainingBuffer = Buffer.from(Uint8Array.prototype.slice.call(pendingChunk, this.remainingScrubBytes));
                     this.pending = remainingBuffer.length !== 0 ? [remainingBuffer] : [];
                     this.remainingScrubBytes = undefined;
                     // this chunk is too large, remove everything
@@ -163,15 +152,17 @@ var ExifTransformer = /** @class */ (function (_super) {
                 }
                 return;
             }
-            var size = pendingChunk.readUInt32BE(0);
-            var chunkType = Uint8Array.prototype.slice.call(pendingChunk, 4, 8).toString();
+            const size = pendingChunk.readUInt32BE(0);
+            const chunkType = Uint8Array.prototype.slice
+                .call(pendingChunk, 4, 8)
+                .toString();
             switch (chunkType) {
-                case 'tIME':
-                case 'iTXt':
-                case 'tEXt':
-                case 'zTXt':
-                case 'eXIf':
-                case 'dSIG':
+                case "tIME":
+                case "iTXt":
+                case "tEXt":
+                case "zTXt":
+                case "eXIf":
+                case "dSIG":
                     this.remainingScrubBytes = size + 12;
                     continue;
                 default:
@@ -179,8 +170,8 @@ var ExifTransformer = /** @class */ (function (_super) {
                     continue;
             }
         }
-    };
-    ExifTransformer.prototype._processPNGGood = function (chunk) {
+    }
+    _processPNGGood(chunk) {
         if (this.remainingGoodBytes === undefined) {
             return chunk;
         }
@@ -193,18 +184,20 @@ var ExifTransformer = /** @class */ (function (_super) {
         }
         else {
             this.push(Uint8Array.prototype.slice.call(chunk, 0, this.remainingGoodBytes));
-            var remaining = Buffer.from(Uint8Array.prototype.slice.call(chunk, this.remainingGoodBytes));
+            const remaining = Buffer.from(Uint8Array.prototype.slice.call(chunk, this.remainingGoodBytes));
             this.remainingGoodBytes = undefined;
             return remaining;
         }
-    };
-    ExifTransformer.prototype._scrubWEBP = function (atEnd, chunk) {
-        var pendingChunk = chunk ? Buffer.concat(__spreadArray(__spreadArray([], this.pending, true), [chunk], false)) : Buffer.concat(this.pending);
+    }
+    _scrubWEBP(atEnd, chunk) {
+        let pendingChunk = chunk
+            ? Buffer.concat([...this.pending, chunk])
+            : Buffer.concat(this.pending);
         while (pendingChunk.length !== 0) {
             pendingChunk = this._processPNGGood(pendingChunk);
             if (this.remainingScrubBytes !== undefined) {
                 if (pendingChunk.length >= this.remainingScrubBytes) {
-                    var remainingBuffer = Buffer.from(Uint8Array.prototype.slice.call(pendingChunk, this.remainingScrubBytes));
+                    const remainingBuffer = Buffer.from(Uint8Array.prototype.slice.call(pendingChunk, this.remainingScrubBytes));
                     this.pending = remainingBuffer.length !== 0 ? [remainingBuffer] : [];
                     this.remainingScrubBytes = undefined;
                     // this chunk is too large, remove everything
@@ -227,10 +220,12 @@ var ExifTransformer = /** @class */ (function (_super) {
                 }
                 return;
             }
-            var chunkType = Uint8Array.prototype.slice.call(pendingChunk, 0, 4).toString();
-            var size = pendingChunk.readUInt32LE(4);
+            const chunkType = Uint8Array.prototype.slice
+                .call(pendingChunk, 0, 4)
+                .toString();
+            const size = pendingChunk.readUInt32LE(4);
             switch (chunkType) {
-                case 'EXIF':
+                case "EXIF":
                     this.remainingScrubBytes = size + 12;
                     continue;
                 default:
@@ -238,8 +233,6 @@ var ExifTransformer = /** @class */ (function (_super) {
                     continue;
             }
         }
-    };
-    return ExifTransformer;
-}(stream_1.Transform));
-exports.default = ExifTransformer;
-module.exports = ExifTransformer;
+    }
+}
+export default ExifTransformer;

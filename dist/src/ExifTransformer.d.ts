@@ -1,11 +1,9 @@
-/// <reference types="node" />
-/// <reference types="node" />
-import { Transform, type TransformOptions, type TransformCallback } from 'stream';
+import { Transform, type TransformOptions, type TransformCallback } from "stream";
 declare class ExifTransformer extends Transform {
     remainingScrubBytes: number | undefined;
     remainingGoodBytes: number | undefined;
     pending: Array<Buffer>;
-    mode: 'png' | 'webp' | 'other' | undefined;
+    mode: "png" | "webp" | "other" | undefined;
     constructor(options?: TransformOptions);
     _transform(chunk: any, _: BufferEncoding, callback: TransformCallback): void;
     _final(callback: TransformCallback): void;
@@ -16,4 +14,4 @@ declare class ExifTransformer extends Transform {
     _scrubWEBP(atEnd: Boolean, chunk?: Buffer): void;
 }
 export default ExifTransformer;
-//# sourceMappingURL=index.d.ts.map
+//# sourceMappingURL=ExifTransformer.d.ts.map

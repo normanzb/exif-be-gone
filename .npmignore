@@ -1,7 +1,7 @@
-/exif-samples
-/metadata-extractor-images
-*.jpg
-/spec
-/.circleci
-/script
-/tsconfig.tsbuildinfo
+# /exif-samples
+# /metadata-extractor-images
+# *.jpg
+# /spec
+# /.circleci
+# /script
+# /tsconfig.tsbuildinfo
