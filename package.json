@@ -15,10 +15,10 @@
     "lint": "eslint \"index.ts\" \"src/**/*.ts\"",
     "lint:fix": "eslint --fix \"index.ts\" \"src/**/*.ts\""
   },
-  "author": "Norman Xu",
+  "author": "A lot of people",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/joshbuddy/exif-be-gone.git"
+    "url": "git+https://github.com/normanzb//exif-be-gone.git"
   },
   "license": "ISC",
   "devDependencies": {
