@@ -1,291 +1,146 @@
-import {
-  Transform,
-  type TransformOptions,
-  type TransformCallback,
-} from "stream";
+import { MatcherFeedResultType, type Matcher } from "./Matcher.js";
+import { PNGMatcher } from "./matchers/PNGMatcher.js";
+import { WebP1Matcher } from "./matchers/WebP1Matcher.js";
+import { WebP2Matcher } from "./matchers/WebP2Matcher.js";
+import { App1MarkerMatcher } from "./matchers/App1MarkerMatcher.js";
+import { TransformHandler } from "./TransformHandler.js";
+import { Scanner } from "./transformHandlers/Scanner.js";
 
-const app1Marker = Buffer.from("ffe1", "hex");
-const exifMarker = Buffer.from("457869660000", "hex"); // Exif\0\0
-const pngMarker = Buffer.from("89504e470d0a1a0a", "hex"); // 211   P   N   G  \r  \n \032 \n
-const webp1Marker = Buffer.from("52494646", "hex"); // RIFF
-const webp2Marker = Buffer.from("57454250", "hex"); // WEBP
-const xmpMarker = Buffer.from("http://ns.adobe.com/xap", "utf-8");
-const flirMarker = Buffer.from("FLIR", "utf-8");
+// const maxMarkerLength = Math.max(
+//   exifMarker.length,
+//   xmpMarker.length,
+//   flirMarker.length
+// );
 
-const maxMarkerLength = Math.max(
-  exifMarker.length,
-  xmpMarker.length,
-  flirMarker.length
-);
-
-class ExifTransformer extends Transform {
-  remainingScrubBytes: number | undefined;
-  remainingGoodBytes: number | undefined;
-  pending: Array<Buffer>;
-  mode: "png" | "webp" | "other" | undefined;
-
-  constructor(options?: TransformOptions) {
-    super(options);
-    this.remainingScrubBytes = undefined;
-    this.pending = [];
-  }
-
-  override _transform(
-    chunk: any,
-    _: BufferEncoding,
-    callback: TransformCallback
+type FileFormatMatchResult = "png" | "webp1" | "webp2" | "jpegOrTiff";
+class SensitiveDataRemovalTransformer extends TransformStream {
+  constructor(
+    private readonly jpegOrTIFFGPSRemovingTransformHandler: JPEGOrTIFFGPSRemovingTransformHandler,
+    private readonly fileFormatDeterminationTransformHandler: FileFormatDeterminationTransformHandler
   ) {
-    if (this.mode === undefined) {
-      if (pngMarker.equals(Uint8Array.prototype.slice.call(chunk, 0, 8))) {
-        this.mode = "png";
-        this.push(Uint8Array.prototype.slice.call(chunk, 0, 8));
-        chunk = Buffer.from(Uint8Array.prototype.slice.call(chunk, 8));
-      } else if (
-        webp1Marker.equals(Uint8Array.prototype.slice.call(chunk, 0, 4)) &&
-        webp2Marker.equals(Uint8Array.prototype.slice.call(chunk, 8, 12))
-      ) {
-        this.mode = "webp";
-        this.push(Uint8Array.prototype.slice.call(chunk, 0, 12));
-        chunk = Buffer.from(Uint8Array.prototype.slice.call(chunk, 12));
-      } else {
-        this.mode = "other";
-      }
-    }
-    this._scrub(false, chunk);
-    callback();
+    super({
+      transform: (chunk, controller) => {
+        return this.transform(chunk, controller);
+      },
+    });
+
+    this.jpegOrTIFFGPSRemovingTransformHandler.rootTransform = this.transform;
+    this.fileFormatDeterminationTransformHandler.rootTransform = this.transform;
   }
 
-  override _final(callback: TransformCallback) {
-    while (this.pending.length !== 0) {
-      this._scrub(true);
+  transform(chunk: Uint8Array, controller: TransformStreamDefaultController) {
+    // if the file format is determined, we can use the sub transformer
+    if (this.fileFormatDeterminationTransformHandler.fileFormat) {
+      return this.getFileSpecificTransformHandler().transform(
+        chunk,
+        controller
+      );
     }
-    callback();
+
+    // otherwise, we need to determine the file format
+    return this.fileFormatDeterminationTransformHandler.transform(
+      chunk,
+      controller
+    );
   }
 
-  _scrub(atEnd: Boolean, chunk?: Buffer) {
-    switch (this.mode) {
-      case "other":
-        return this._scrubOther(atEnd, chunk);
-      case "png":
-        return this._scrubPNG(atEnd, chunk);
-      case "webp":
-        return this._scrubWEBP(atEnd, chunk);
+  getFileSpecificTransformHandler() {
+    switch (this.fileFormatDeterminationTransformHandler.fileFormat) {
+      case "jpegOrTiff":
+        return this.jpegOrTIFFGPSRemovingTransformHandler;
       default:
-        throw new Error("unknown mode");
-    }
-  }
-
-  _scrubOther(atEnd: Boolean, chunk?: Buffer) {
-    let pendingChunk = chunk
-      ? Buffer.concat([...this.pending, chunk])
-      : Buffer.concat(this.pending);
-    // currently haven't detected an app1 marker
-    if (this.remainingScrubBytes === undefined) {
-      const app1Start = pendingChunk.indexOf(app1Marker);
-      // no app1 in the current pendingChunk
-      if (app1Start === -1) {
-        // if last byte is ff, wait for more
-        if (!atEnd && pendingChunk[pendingChunk.length - 1] === app1Marker[0]) {
-          if (chunk) this.pending.push(chunk);
-          return;
-        }
-      } else {
-        // there is an app1, but not enough data to read to exif marker
-        // so defer
-        if (app1Start + maxMarkerLength + 4 > pendingChunk.length) {
-          if (atEnd) {
-            this.push(pendingChunk);
-            this.pending.length = 0;
-          } else if (chunk) {
-            this.pending.push(chunk);
-          }
-          return;
-          // we have enough, so lets read the length
-        } else {
-          const candidateMarker = Uint8Array.prototype.slice.call(
-            pendingChunk,
-            app1Start + 4,
-            app1Start + maxMarkerLength + 4
-          );
-          if (
-            exifMarker.compare(candidateMarker, 0, exifMarker.length) === 0 ||
-            xmpMarker.compare(candidateMarker, 0, xmpMarker.length) === 0 ||
-            flirMarker.compare(candidateMarker, 0, flirMarker.length) === 0
-          ) {
-            // we add 2 to the remainingScrubBytes to account for the app1 marker
-            this.remainingScrubBytes =
-              pendingChunk.readUInt16BE(app1Start + 2) + 2;
-            this.push(
-              Uint8Array.prototype.slice.call(pendingChunk, 0, app1Start)
-            );
-            pendingChunk = Buffer.from(
-              Uint8Array.prototype.slice.call(pendingChunk, app1Start)
-            );
-          }
-        }
-      }
-    }
-
-    // we have successfully read an app1/exif marker, so we can remove data
-    if (
-      this.remainingScrubBytes !== undefined &&
-      this.remainingScrubBytes !== 0
-    ) {
-      // there is more data than we want to remove, so we only remove up to remainingScrubBytes
-      if (pendingChunk.length >= this.remainingScrubBytes) {
-        const remainingBuffer = Buffer.from(
-          Uint8Array.prototype.slice.call(
-            pendingChunk,
-            this.remainingScrubBytes
-          )
-        );
-        this.pending = remainingBuffer.length !== 0 ? [remainingBuffer] : [];
-        this.remainingScrubBytes = undefined;
-        // this chunk is too large, remove everything
-      } else {
-        this.remainingScrubBytes -= pendingChunk.length;
-        this.pending.length = 0;
-      }
-    } else {
-      // push this chunk
-      this.push(pendingChunk);
-      this.remainingScrubBytes = undefined;
-      this.pending.length = 0;
-    }
-  }
-
-  _scrubPNG(atEnd: Boolean, chunk?: Buffer) {
-    let pendingChunk = chunk
-      ? Buffer.concat([...this.pending, chunk])
-      : Buffer.concat(this.pending);
-
-    while (pendingChunk.length !== 0) {
-      pendingChunk = this._processPNGGood(
-        pendingChunk
-      ) as unknown as Buffer<ArrayBuffer>;
-      if (this.remainingScrubBytes !== undefined) {
-        if (pendingChunk.length >= this.remainingScrubBytes) {
-          const remainingBuffer = Buffer.from(
-            Uint8Array.prototype.slice.call(
-              pendingChunk,
-              this.remainingScrubBytes
-            )
-          );
-          this.pending = remainingBuffer.length !== 0 ? [remainingBuffer] : [];
-          this.remainingScrubBytes = undefined;
-          // this chunk is too large, remove everything
-        } else {
-          this.remainingScrubBytes -= pendingChunk.length;
-          this.pending.length = 0;
-        }
-        return;
-      }
-
-      if (pendingChunk.length === 0) return;
-      if (pendingChunk.length < 8) {
-        if (atEnd) {
-          this.push(pendingChunk);
-          this.pending.length = 0;
-        } else {
-          this.pending = [pendingChunk];
-        }
-        return;
-      }
-
-      const size = pendingChunk.readUInt32BE(0);
-      const chunkType = Uint8Array.prototype.slice
-        .call(pendingChunk, 4, 8)
-        .toString();
-      switch (chunkType) {
-        case "tIME":
-        case "iTXt":
-        case "tEXt":
-        case "zTXt":
-        case "eXIf":
-        case "dSIG":
-          this.remainingScrubBytes = size + 12;
-          continue;
-        default:
-          this.remainingGoodBytes = size + 12;
-          continue;
-      }
-    }
-  }
-
-  _processPNGGood(chunk: Buffer): Buffer {
-    if (this.remainingGoodBytes === undefined) {
-      return chunk;
-    }
-    this.pending.length = 0;
-    // we need all these bytes
-    if (this.remainingGoodBytes >= chunk.length) {
-      this.remainingGoodBytes -= chunk.length;
-      this.push(chunk);
-      return Buffer.alloc(0);
-    } else {
-      this.push(
-        Uint8Array.prototype.slice.call(chunk, 0, this.remainingGoodBytes)
-      );
-      const remaining = Buffer.from(
-        Uint8Array.prototype.slice.call(chunk, this.remainingGoodBytes)
-      );
-      this.remainingGoodBytes = undefined;
-      return remaining;
-    }
-  }
-
-  _scrubWEBP(atEnd: Boolean, chunk?: Buffer) {
-    let pendingChunk = chunk
-      ? Buffer.concat([...this.pending, chunk])
-      : Buffer.concat(this.pending);
-
-    while (pendingChunk.length !== 0) {
-      pendingChunk = this._processPNGGood(
-        pendingChunk
-      ) as unknown as Buffer<ArrayBuffer>;
-      if (this.remainingScrubBytes !== undefined) {
-        if (pendingChunk.length >= this.remainingScrubBytes) {
-          const remainingBuffer = Buffer.from(
-            Uint8Array.prototype.slice.call(
-              pendingChunk,
-              this.remainingScrubBytes
-            )
-          );
-          this.pending = remainingBuffer.length !== 0 ? [remainingBuffer] : [];
-          this.remainingScrubBytes = undefined;
-          // this chunk is too large, remove everything
-        } else {
-          this.remainingScrubBytes -= pendingChunk.length;
-          this.pending.length = 0;
-        }
-        return;
-      }
-
-      if (pendingChunk.length === 0) return;
-      if (pendingChunk.length < 8) {
-        if (atEnd) {
-          this.push(pendingChunk);
-          this.pending.length = 0;
-        } else {
-          this.pending = [pendingChunk];
-        }
-        return;
-      }
-
-      const chunkType = Uint8Array.prototype.slice
-        .call(pendingChunk, 0, 4)
-        .toString();
-      const size = pendingChunk.readUInt32LE(4);
-      switch (chunkType) {
-        case "EXIF":
-          this.remainingScrubBytes = size + 12;
-          continue;
-        default:
-          this.remainingGoodBytes = size + 12;
-          continue;
-      }
+        throw new Error("Unsupported file format");
     }
   }
 }
 
-export default ExifTransformer;
+export class ExifTransformer extends SensitiveDataRemovalTransformer {
+  constructor() {
+    super(
+      new JPEGOrTIFFGPSRemovingTransformHandler(),
+      new FileFormatDeterminationTransformHandler()
+    );
+  }
+}
+
+class FileFormatDeterminationTransformHandler extends TransformHandler {
+  private matchingChunks: Uint8Array[] = [];
+  private matchers: Matcher[] = [
+    new PNGMatcher(),
+    new WebP1Matcher(),
+    new WebP2Matcher(),
+  ];
+
+  private _fileFormat: FileFormatMatchResult | undefined;
+  get fileFormat() {
+    return this._fileFormat;
+  }
+  set fileFormat(value: FileFormatMatchResult | undefined) {
+    this._fileFormat = value;
+    // this.pipingEnabled = !!value;
+  }
+
+  override handleTransform(
+    chunk: Uint8Array,
+    controller: TransformStreamDefaultController
+  ) {
+    let anyMatching = false;
+    let matchedResult: FileFormatMatchResult | undefined;
+    let remainingChunk: Uint8Array | undefined;
+
+    for (const matcher of this.matchers) {
+      const feedResult = matcher.feed(chunk);
+
+      if (feedResult.type === MatcherFeedResultType.MATCHED) {
+        if (matcher instanceof PNGMatcher) {
+          matchedResult = "png";
+        } else if (matcher instanceof WebP1Matcher) {
+          matchedResult = "webp1";
+        } else if (matcher instanceof WebP2Matcher) {
+          matchedResult = "webp2";
+        } else {
+          matchedResult = "jpegOrTiff";
+        }
+        remainingChunk = feedResult.remainingChunk;
+        break;
+      }
+
+      if (feedResult.type === MatcherFeedResultType.MATCHING) {
+        anyMatching = true;
+      }
+    }
+
+    if (matchedResult) {
+      this.matchingChunks.forEach((pendingChunk) => {
+        controller.enqueue(pendingChunk);
+      });
+      controller.enqueue(chunk);
+      this.matchingChunks = [];
+      this.fileFormat = matchedResult;
+      if (remainingChunk && remainingChunk.length > 0) {
+        this.transformComplete(remainingChunk, controller);
+      }
+      return;
+    }
+
+    if (anyMatching) {
+      this.matchingChunks.push(chunk);
+      return;
+    }
+
+    throw new Error("Unsupported image format");
+  }
+}
+class JPEGOrTIFFGPSRemovingTransformHandler extends Scanner<
+  [
+    { name: "app1Marker"; matcher: App1MarkerMatcher },
+    { name: "app1RemainingBytes"; numOfBytes: 2 }
+  ]
+> {
+  constructor() {
+    super([
+      { name: "app1Marker", matcher: new App1MarkerMatcher() },
+      { name: "app1RemainingBytes", numOfBytes: 2 },
+    ]);
+  }
+}
