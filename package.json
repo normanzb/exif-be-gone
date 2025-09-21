@@ -1,7 +1,7 @@
 {
-  "name": "exif-be-gone",
+  "name": "gps-be-gone",
   "version": "1.5.1",
-  "description": "Remove EXIF data from your image files.",
+  "description": "Remove GPS data in EXIF data from your image files.",
   "main": "index.js",
   "bin": {
     "exif-be-gone": "cli.js"
