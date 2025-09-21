@@ -135,77 +135,6 @@ class FileFormatDeterminationTransformHandler extends Scanner {
     }
   }
 }
-
-// class FileFormatDeterminationTransformHandler extends TransformHandler {
-//   private matchingChunks: Uint8Array[] = [];
-//   private seekers: Seeker[] = [
-//     new Seeker({ matcher: pngMarker }),
-//     new Seeker({ matcher: webp1Marker }),
-//     new Seeker({ matcher: webp2Marker }),
-//   ];
-
-//   private _fileFormat: FileFormatMatchResult | undefined;
-//   get fileFormat() {
-//     return this._fileFormat;
-//   }
-//   set fileFormat(value: FileFormatMatchResult | undefined) {
-//     this._fileFormat = value;
-//     // this.pipingEnabled = !!value;
-//   }
-
-//   override handleTransform(
-//     chunk: Uint8Array,
-//     controller: TransformStreamDefaultController
-//   ) {
-//     let anyMatching = false;
-//     let matchedResult: FileFormatMatchResult | undefined;
-//     let remainingChunk: Uint8Array | undefined;
-
-//     for (const matcher of this.seekers) {
-//       const feedResult = matcher.feed(chunk);
-
-//       if (feedResult.type === SeekerFeedResultType.MATCHED) {
-//         if (matcher.matcher === pngMarker) {
-//           matchedResult = "png";
-//         } else if (matcher.matcher === webp1Marker) {
-//           matchedResult = "webp1";
-//         } else if (matcher.matcher === webp2Marker) {
-//           matchedResult = "webp2";
-//         } else {
-//           matchedResult = "jpegOrTiff";
-//         }
-//         remainingChunk = feedResult.remainingChunk;
-//         break;
-//       }
-
-//       if (feedResult.type === SeekerFeedResultType.MATCHING) {
-//         anyMatching = true;
-//       }
-//     }
-
-//     if (matchedResult) {
-//       this.matchingChunks.forEach((pendingChunk) => {
-//         controller.enqueue(pendingChunk);
-//       });
-//       controller.enqueue(chunk);
-//       this.matchingChunks = [];
-//       this.fileFormat = matchedResult;
-//       if (remainingChunk && remainingChunk.length > 0) {
-//         this.transformComplete(remainingChunk, controller);
-//       }
-//       return;
-//     }
-
-//     if (anyMatching) {
-//       this.matchingChunks.push(chunk);
-//       return;
-//     }
-
-//     console.log("anyMatching", anyMatching, "matchedResult", matchedResult);
-
-//     throw new Error("Unsupported image format");
-//   }
-// }
 class JPEGOrTIFFGPSRemovingTransformHandler extends Scanner {
   app1RemainingBytes: Uint8Array | undefined;
   constructor() {
@@ -245,16 +174,4 @@ class JPEGOrTIFFGPSRemovingTransformHandler extends Scanner {
       controller.enqueue(matchedBytes);
     }
   }
-
-  // onAllRemainingBytesError(
-  //   _: string,
-  //   unenqueuedChunks: Uint8Array[],
-  //   controller: TransformStreamDefaultController
-  // ) {
-  //   controller.enqueue(app1Marker);
-  //   controller.enqueue(this.remainingBytes);
-  //   unenqueuedChunks.forEach((chunk) => {
-  //     controller.enqueue(chunk);
-  //   });
-  // }
 }
