@@ -1,8 +1,8 @@
-import { MatcherFeedResultType, type Matcher } from "./Matcher.js";
-import { PNGMatcher } from "./matchers/PNGMatcher.js";
-import { WebP1Matcher } from "./matchers/WebP1Matcher.js";
-import { WebP2Matcher } from "./matchers/WebP2Matcher.js";
-import { App1MarkerMatcher } from "./matchers/App1MarkerMatcher.js";
+import { SeekerFeedResultType, type Seeker } from "./Seeker.js";
+import { PNGSeeker } from "./seekers/PNGSeeker.js";
+import { WebP1Seeker } from "./seekers/WebP1Seeker.js";
+import { WebP2Seeker } from "./seekers/WebP2Seeker.js";
+import { App1MarkerSeeker } from "./seekers/App1MarkerSeeker.js";
 import { TransformHandler } from "./TransformHandler.js";
 
 // const maxMarkerLength = Math.max(
@@ -14,10 +14,10 @@ import { TransformHandler } from "./TransformHandler.js";
 type FileFormatMatchResult = "png" | "webp1" | "webp2" | "jpegOrTiff";
 class GPSRemovalTransformer extends TransformStream {
   private matchingChunks: Uint8Array[] = [];
-  private matchers: Matcher[] = [
-    new PNGMatcher(),
-    new WebP1Matcher(),
-    new WebP2Matcher(),
+  private matchers: Seeker[] = [
+    new PNGSeeker(),
+    new WebP1Seeker(),
+    new WebP2Seeker(),
   ];
 
   private _fileFormat: FileFormatMatchResult | undefined;
@@ -45,12 +45,12 @@ class GPSRemovalTransformer extends TransformStream {
         for (const matcher of this.matchers) {
           const feedResult = matcher.feed(chunk);
 
-          if (feedResult.type === MatcherFeedResultType.MATCHED) {
-            if (matcher instanceof PNGMatcher) {
+          if (feedResult.type === SeekerFeedResultType.MATCHED) {
+            if (matcher instanceof PNGSeeker) {
               matchedResult = "png";
-            } else if (matcher instanceof WebP1Matcher) {
+            } else if (matcher instanceof WebP1Seeker) {
               matchedResult = "webp1";
-            } else if (matcher instanceof WebP2Matcher) {
+            } else if (matcher instanceof WebP2Seeker) {
               matchedResult = "webp2";
             } else {
               matchedResult = "jpegOrTiff";
@@ -58,7 +58,7 @@ class GPSRemovalTransformer extends TransformStream {
             break;
           }
 
-          if (feedResult.type === MatcherFeedResultType.MATCHING) {
+          if (feedResult.type === SeekerFeedResultType.MATCHING) {
             anyMatching = true;
           }
         }
@@ -99,7 +99,7 @@ export class ExifTransformer extends GPSRemovalTransformer {
   }
 }
 class JPEGOrTIFFGPSRemovingTransformHandler extends TransformHandler {
-  private readonly app1MarkerMatcher: App1MarkerMatcher;
+  private readonly app1MarkerMatcher: App1MarkerSeeker;
   private state: "waitingForApp1Marker" | "app1MarkerFound" =
     "waitingForApp1Marker";
   private matchingChunks: Uint8Array[] = [];
@@ -107,7 +107,7 @@ class JPEGOrTIFFGPSRemovingTransformHandler extends TransformHandler {
   constructor() {
     super();
 
-    this.app1MarkerMatcher = new App1MarkerMatcher();
+    this.app1MarkerMatcher = new App1MarkerSeeker();
   }
 
   override transform(
@@ -119,7 +119,7 @@ class JPEGOrTIFFGPSRemovingTransformHandler extends TransformHandler {
         const feedResult = this.app1MarkerMatcher.feed(chunk);
 
         switch (feedResult.type) {
-          case MatcherFeedResultType.UNMATCHED:
+          case SeekerFeedResultType.UNMATCHED:
             // let go any bytes before the marker
             if (this.matchingChunks.length > 0) {
               this.matchingChunks.forEach((chunk) => {
@@ -129,11 +129,11 @@ class JPEGOrTIFFGPSRemovingTransformHandler extends TransformHandler {
             }
             controller.enqueue(chunk);
             break;
-          case MatcherFeedResultType.MATCHED:
+          case SeekerFeedResultType.MATCHED:
             this.state = "app1MarkerFound";
             this.matchingChunks.push(chunk);
             break;
-          case MatcherFeedResultType.MATCHING:
+          case SeekerFeedResultType.MATCHING:
             this.matchingChunks.push(chunk);
             break;
           default:

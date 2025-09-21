@@ -1,77 +1,100 @@
 import path from "node:path";
-import { createReadStream } from "node:fs";
-import { Readable } from "node:stream"; // for interop helpers
+import { createReadStream, createWriteStream } from "node:fs";
+import { Readable, Writable } from "node:stream"; // for interop helpers
 import { describe, it } from "node:test";
-import { strict as assert } from "node:assert";
+import { fail } from "node:assert";
+import ExifTransformer from "../src/ExifTransformer.js";
 
 // import { Readable } from "node:stream";
 // import streamBuffers from "stream-buffers";
 // import ExifTransformer from "../index.js";
 
-describe("Exif be gone", () => {
-  // describe("stripping exif data", () => {
-  //   it("should strip data", () => {
-  //     return new Promise((resolve, reject) => {
-  //       const writer = new streamBuffers.WritableStreamBuffer();
-  //       createReadStream("Canon_40D.jpg")
-  //         .pipe(new ExifTransformer())
-  //         .pipe(writer)
-  //         .on("finish", () => {
-  //           try {
-  //             const contents = writer.getContents();
-  //             assert(contents, "Writer contents should not be null");
-  //             assert.equal(contents.length, 5480);
-  //             resolve();
-  //           } catch (error) {
-  //             reject(error);
-  //           }
-  //         })
-  //         .on("error", reject);
-  //     });
-  //   });
-  //   // it("should still strip with partial chunks", () => {
-  //   //   return new Promise((resolve, reject) => {
-  //   //     const writer = new streamBuffers.WritableStreamBuffer();
-  //   //     const lengthBuf = Buffer.allocUnsafe(2);
-  //   //     lengthBuf.writeInt16BE(8, 0);
-  //   //     const readable = Readable.from([
-  //   //       Buffer.from("ff", "hex"),
-  //   //       Buffer.from("e1", "hex"),
-  //   //       lengthBuf,
-  //   //       Buffer.from("457869", "hex"),
-  //   //       Buffer.from("660000", "hex"),
-  //   //       Buffer.from("0001020304050607", "hex"),
-  //   //       Buffer.from("08090a0b0c0d0e0f", "hex"),
-  //   //       Buffer.from("0001020304050607", "hex"),
-  //   //       Buffer.from("08090a0b0c0d0e0f", "hex"),
-  //   //     ]);
-  //   //     readable
-  //   //       .pipe(new ExifTransformer())
-  //   //       .pipe(writer)
-  //   //       .on("finish", () => {
-  //   //         try {
-  //   //           const output = writer.getContents();
-  //   //           assert(output, "Writer output should not be null");
-  //   //           assert.equal(output.length, 32);
-  //   //           resolve();
-  //   //         } catch (error) {
-  //   //           reject(error);
-  //   //         }
-  //   //       })
-  //   //       .on("error", reject);
-  //   //   });
-  //   // });
-  // });
+// describe("Exif Transformer", () => {
+// describe("stripping exif data", () => {
+//   it("should strip data", () => {
+//     return new Promise((resolve, reject) => {
+//       const writer = new streamBuffers.WritableStreamBuffer();
+//       createReadStream("Canon_40D.jpg")
+//         .pipe(new ExifTransformer())
+//         .pipe(writer)
+//         .on("finish", () => {
+//           try {
+//             const contents = writer.getContents();
+//             assert(contents, "Writer contents should not be null");
+//             assert.equal(contents.length, 5480);
+//             resolve();
+//           } catch (error) {
+//             reject(error);
+//           }
+//         })
+//         .on("error", reject);
+//     });
+//   });
+//   // it("should still strip with partial chunks", () => {
+//   //   return new Promise((resolve, reject) => {
+//   //     const writer = new streamBuffers.WritableStreamBuffer();
+//   //     const lengthBuf = Buffer.allocUnsafe(2);
+//   //     lengthBuf.writeInt16BE(8, 0);
+//   //     const readable = Readable.from([
+//   //       Buffer.from("ff", "hex"),
+//   //       Buffer.from("e1", "hex"),
+//   //       lengthBuf,
+//   //       Buffer.from("457869", "hex"),
+//   //       Buffer.from("660000", "hex"),
+//   //       Buffer.from("0001020304050607", "hex"),
+//   //       Buffer.from("08090a0b0c0d0e0f", "hex"),
+//   //       Buffer.from("0001020304050607", "hex"),
+//   //       Buffer.from("08090a0b0c0d0e0f", "hex"),
+//   //     ]);
+//   //     readable
+//   //       .pipe(new ExifTransformer())
+//   //       .pipe(writer)
+//   //       .on("finish", () => {
+//   //         try {
+//   //           const output = writer.getContents();
+//   //           assert(output, "Writer output should not be null");
+//   //           assert.equal(output.length, 32);
+//   //           resolve();
+//   //         } catch (error) {
+//   //           reject(error);
+//   //         }
+//   //       })
+//   //       .on("error", reject);
+//   //   });
+//   // });
+// });
+// });
+describe("ExifTransformer", () => {
+  const jpgCanon40d = Readable.toWeb(
+    createReadStream(path.join(import.meta.dirname, "../fixtures/canon40d.jpg"))
+  );
 
-  describe("Matcher", () => {
-    const jpgCanon40d = Readable.toWeb(
-      createReadStream(path.join(__dirname, "../fixtures/canon40d.jpg"))
-    );
+  it("should works", async () => {
+    const transformer = new ExifTransformer();
+    const transformed = jpgCanon40d.pipeThrough(transformer);
 
-    it("should match", () => {
-      const matcher = new Matcher({ matcher: hexToBytes("ffe1") });
-      const result = matcher.feed(Buffer.from("ffe1", "hex"), "hex");
-      assert.equal(result, MatcherFeedResultType.MATCHED);
-    });
+    const reader = transformed.getReader();
+    const writer = Writable.toWeb(
+      createWriteStream(
+        path.join(import.meta.dirname, "./canon40d-transformed.jpg")
+      )
+    ).getWriter();
+
+    let done: boolean = false;
+    let value: Uint8Array;
+
+    while (!done) {
+      ({ done, value } = await reader.read());
+
+      if (done) {
+        break;
+      }
+
+      // console.log(value.toString());
+
+      await writer.write(Buffer.from(value));
+    }
+
+    writer.close();
   });
 });

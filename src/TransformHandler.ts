@@ -1,10 +1,25 @@
 export abstract class TransformHandler {
-  public rootTransform?: (
+  private _rootTransform?: (
     chunk: Uint8Array,
     controller: TransformStreamDefaultController
   ) => void;
 
+  get rootTransform() {
+    return this._rootTransform;
+  }
+
   constructor() {}
+
+  setRootTransform(
+    transformStream: TransformStream & {
+      transform: (
+        chunk: Uint8Array,
+        controller: TransformStreamDefaultController
+      ) => void;
+    }
+  ) {
+    this._rootTransform = transformStream.transform.bind(transformStream);
+  }
 
   transform(
     chunk: Uint8Array,

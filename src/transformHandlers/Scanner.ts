@@ -1,30 +1,33 @@
-import { Matcher, MatcherFeedResultType } from "../Matcher.js";
+import { Seeker, SeekerFeedResultType } from "../Seeker.js";
 import { TransformHandler } from "../TransformHandler.js";
 
 // utility types
 type DistributiveMerge<T, M> = T extends infer U ? U & M : never;
-// type KeysToObject<T extends string, V = unknown> = {
-//   [K in T]: V;
-// };
-// type ToScannerEventMap<T extends BaseScannerSpec> = KeysToObject<
-//   T extends BaseScannerSpec ? T["name"] : never,
-//   () => void
-// >;
-// type Test1 = ToScannerEventMap<
-//   [
-//     { name: "name1"; matcher: Matcher },
-//     { name: "name2"; bytes: number }
-//   ][number]
-// >;
-
-// ToScannerEventMap<TScannerSpecUnionArray[number]>
 
 // scanner types
 type BaseScannerSpec = { name: string };
 type ScannerSpecUnion = DistributiveMerge<
-  { matcher: Matcher } | { numOfBytes: number },
+  | { seeker: { matcher: Uint8Array; maxNumOfBytes?: number } }
+  | { numOfBytes: number | "maxNumOfBytes" },
   BaseScannerSpec
 >;
+
+type ScannerInstantiatedSpecSeeker = {
+  seeker: Seeker;
+  unenqueuedChunks: Uint8Array[];
+};
+type ScannerInstantiatedSpecNumOfBytes = {
+  numOfBytes: number | "maxNumOfBytes";
+  collectedBytes: Uint8Array;
+  collectedNumOfBytes: number;
+  unenqueuedChunks: Uint8Array[];
+};
+type ScannerInstantiatedSpec = DistributiveMerge<
+  ScannerInstantiatedSpecSeeker | ScannerInstantiatedSpecNumOfBytes,
+  BaseScannerSpec
+>;
+
+export type UnmatchedBehavior = "enqueue" | "skip";
 
 /**
  * Abstract base class for scanning and processing data streams based on specifications.
@@ -56,16 +59,28 @@ type ScannerSpecUnion = DistributiveMerge<
  * ```
  */
 export abstract class Scanner<
-  TScannerSpecUnionArray extends ScannerSpecUnion[]
+  TScannerSpecUnionArray extends ScannerSpecUnion[] = ScannerSpecUnion[]
 > extends TransformHandler {
-  [key: `on${Capitalize<string>}`]: (
-    chunk: Uint8Array,
+  [key: `on${Capitalize<string>}Found`]: (
+    unenqueuedChunks: Uint8Array[],
+    controller: TransformStreamDefaultController
+  ) => {
+    nextSpecPreceedingBytesBehavior?: UnmatchedBehavior;
+    maxNumOfBytes?: number;
+  } | void;
+
+  [key: `on${Capitalize<string>}Error`]: (
+    error: "seekerEnded",
+    unenqueuedChunks: Uint8Array[],
     controller: TransformStreamDefaultController
   ) => void;
 
   private specIndex = 0;
+  private currentPreceedingBytesBehavior: UnmatchedBehavior = "enqueue";
+  private currentMaxNumOfBytes: number = 0;
+  private instantiatedSpecs: ScannerInstantiatedSpec[] = [];
 
-  constructor(public readonly specs: TScannerSpecUnionArray) {
+  constructor(readonly specs: TScannerSpecUnionArray) {
     super();
   }
 
@@ -80,30 +95,79 @@ export abstract class Scanner<
       return;
     }
 
-    const cappedSpecName = ("on" +
-      (spec.name.slice(0, 1).toUpperCase() +
-        spec.name.slice(1))) as `on${Capitalize<string>}`;
+    if ("seeker" in spec) {
+      const currentInstantiatedSpec = this.instantiatedSpecs[this.specIndex];
+      const instantiatedSpec =
+        !!currentInstantiatedSpec && "seeker" in currentInstantiatedSpec
+          ? currentInstantiatedSpec
+          : ({
+              name: spec.name,
+              seeker: new Seeker({
+                ...spec.seeker,
+                ...{ maxNumOfBytes: this.currentMaxNumOfBytes },
+              }),
+              unenqueuedChunks: [],
+            } satisfies ScannerInstantiatedSpecSeeker & BaseScannerSpec);
 
-    if ("matcher" in spec) {
-      const result = spec.matcher.feed(chunk);
+      this.instantiatedSpecs[this.specIndex] = instantiatedSpec;
+
+      const result = instantiatedSpec.seeker.feed(chunk);
       const resultType = result.type;
       switch (resultType) {
-        case MatcherFeedResultType.MATCHED:
+        case SeekerFeedResultType.MATCHED:
           {
-            this.specIndex++;
-            if (cappedSpecName in this) {
-              this[cappedSpecName](spec.matcher.matcher, controller);
+            switch (this.currentPreceedingBytesBehavior) {
+              case "enqueue":
+                controller.enqueue(result.preceedingBytes);
+                break;
+              case "skip":
+                instantiatedSpec.unenqueuedChunks.push(result.preceedingBytes);
+                break;
+              default:
+                this.currentPreceedingBytesBehavior satisfies never;
             }
+
+            this.callSpecFoundAndAdvanceSpec(
+              instantiatedSpec.unenqueuedChunks,
+              controller
+            );
 
             if (result.remainingChunk.length > 0) {
               this.transformComplete(result.remainingChunk, controller);
             }
           }
           break;
-        case MatcherFeedResultType.MATCHING:
+        case SeekerFeedResultType.MATCHING:
+          switch (this.currentPreceedingBytesBehavior) {
+            case "enqueue":
+              controller.enqueue(chunk);
+              break;
+            case "skip":
+              instantiatedSpec.unenqueuedChunks.push(chunk);
+              break;
+            default:
+              this.currentPreceedingBytesBehavior satisfies never;
+          }
           break;
-        case MatcherFeedResultType.UNMATCHED:
-          controller.enqueue(chunk);
+        case SeekerFeedResultType.UNMATCHED:
+          switch (this.currentPreceedingBytesBehavior) {
+            case "enqueue":
+              controller.enqueue(chunk);
+              break;
+            case "skip":
+              instantiatedSpec.unenqueuedChunks.push(chunk);
+              break;
+            default:
+              this.currentPreceedingBytesBehavior satisfies never;
+          }
+          break;
+        case SeekerFeedResultType.ENDED:
+          instantiatedSpec.unenqueuedChunks.push(chunk);
+          this.callSpecError(
+            "seekerEnded",
+            instantiatedSpec.unenqueuedChunks,
+            controller
+          );
           break;
         default:
           resultType satisfies never;
@@ -113,20 +177,98 @@ export abstract class Scanner<
     }
 
     if ("numOfBytes" in spec) {
-      const numOfBytes = spec.numOfBytes;
-      const slicedChunk = chunk.subarray(0, numOfBytes);
+      const numOfBytes =
+        typeof spec.numOfBytes === "number"
+          ? spec.numOfBytes
+          : this.currentMaxNumOfBytes;
 
-      if (cappedSpecName in this) {
-        this[cappedSpecName](slicedChunk, controller);
+      const currentInstantiatedSpec = this.instantiatedSpecs[this.specIndex];
+      const instantiatedSpec =
+        !!currentInstantiatedSpec && "numOfBytes" in currentInstantiatedSpec
+          ? currentInstantiatedSpec
+          : ({
+              name: spec.name,
+              numOfBytes: spec.numOfBytes,
+              collectedBytes: new Uint8Array(numOfBytes),
+              collectedNumOfBytes: 0,
+              unenqueuedChunks: [],
+            } satisfies ScannerInstantiatedSpecNumOfBytes & BaseScannerSpec);
+
+      const numOfBytesToCollect =
+        numOfBytes - instantiatedSpec.collectedNumOfBytes;
+
+      const soFarChunk = chunk.subarray(0, numOfBytesToCollect);
+      instantiatedSpec.collectedBytes.set(
+        soFarChunk,
+        instantiatedSpec.collectedNumOfBytes
+      );
+      instantiatedSpec.collectedNumOfBytes += soFarChunk.length;
+
+      if (instantiatedSpec.collectedNumOfBytes === numOfBytes) {
+        this.callSpecFoundAndAdvanceSpec(
+          [instantiatedSpec.collectedBytes],
+          controller
+        );
+        const remainingChunk = chunk.subarray(numOfBytesToCollect);
+        if (remainingChunk.length > 0) {
+          this.transformComplete(remainingChunk, controller);
+        }
       }
 
-      const remainingChunk = chunk.subarray(numOfBytes);
-
-      if (remainingChunk.length > 0) {
-        this.transformComplete(remainingChunk, controller);
-      }
+      return;
     }
 
     throw new Error("Invalid spec");
+  }
+
+  reset() {
+    this.specIndex = 0;
+    this.currentPreceedingBytesBehavior = "enqueue";
+    this.currentMaxNumOfBytes = 0;
+    this.instantiatedSpecs = [];
+  }
+
+  private callSpecFoundAndAdvanceSpec(
+    unenequeuedChunks: Uint8Array[],
+    controller: TransformStreamDefaultController
+  ) {
+    const spec = this.specs[this.specIndex];
+    if (!spec) {
+      throw new Error("No current spec");
+    }
+
+    const cappedSpecName = ("on" +
+      (spec.name.slice(0, 1).toUpperCase() +
+        spec.name.slice(1) +
+        "Found")) as `on${Capitalize<string>}Found`;
+
+    if (cappedSpecName in this) {
+      const { nextSpecPreceedingBytesBehavior, maxNumOfBytes } =
+        this[cappedSpecName](unenequeuedChunks, controller) ?? {};
+
+      this.currentPreceedingBytesBehavior =
+        nextSpecPreceedingBytesBehavior ?? "enqueue";
+      this.currentMaxNumOfBytes = maxNumOfBytes ?? 0;
+    }
+
+    this.specIndex++;
+  }
+
+  private callSpecError(
+    error: "seekerEnded",
+    unenequeuedChunks: Uint8Array[],
+    controller: TransformStreamDefaultController
+  ) {
+    const spec = this.specs[this.specIndex];
+    if (!spec) {
+      throw new Error("No current spec");
+    }
+    const cappedSpecName = ("on" +
+      (spec.name.slice(0, 1).toUpperCase() +
+        spec.name.slice(1) +
+        "NotFound")) as `on${Capitalize<string>}Error`;
+    if (cappedSpecName in this) {
+      this[cappedSpecName](error, unenequeuedChunks, controller);
+    }
   }
 }
